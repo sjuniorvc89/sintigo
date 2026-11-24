@@ -13,6 +13,7 @@ import {
   Trash2,
   BookOpen,
   Globe,
+  Pencil,
 } from 'lucide-react';
 import { CourseModule } from '../types';
 
@@ -22,6 +23,7 @@ interface LessonMapProps {
   onSelectModule: (module: CourseModule) => void;
   onOpenCustomTopic: () => void;
   onOpenAddTopic: () => void;
+  onEditModule: (module: CourseModule) => void;
   onDeleteModule: (moduleId: string) => void;
   scrollTargetRef?: React.RefObject<HTMLDivElement | null>;
 }
@@ -32,6 +34,7 @@ export const LessonMap: React.FC<LessonMapProps> = ({
   onSelectModule,
   onOpenCustomTopic,
   onOpenAddTopic,
+  onEditModule,
   onDeleteModule,
   scrollTargetRef,
 }) => {
@@ -172,8 +175,21 @@ export const LessonMap: React.FC<LessonMapProps> = ({
                   </div>
                 </div>
 
-                {/* Right side: status + delete */}
+                {/* Right side: edit + delete + status */}
                 <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditModule(mod);
+                    }}
+                    className="p-1.5 rounded-lg transition-all hover:scale-110"
+                    style={{ color: 'var(--text-muted)' }}
+                    title="Editar tema y preguntas"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+
                   {modules.length > 1 && (
                     <button
                       type="button"
@@ -271,17 +287,33 @@ export const LessonMap: React.FC<LessonMapProps> = ({
                 </div>
               </div>
 
-              {/* Custom topic edit */}
-              {mod.isCustom && (
+              {/* Card Actions Footer */}
+              <div className="flex items-center justify-between pt-1 text-[11px]">
                 <button
-                  onClick={(e) => { e.stopPropagation(); onOpenCustomTopic(); }}
-                  className="text-[11px] font-semibold flex items-center gap-1 self-end transition-all hover:opacity-80"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEditModule(mod);
+                  }}
+                  className="font-bold flex items-center gap-1 transition-all hover:underline"
                   style={{ color: 'var(--accent)' }}
                 >
-                  <Sparkles className="w-3 h-3" />
-                  Editar apuntes
+                  <Pencil className="w-3 h-3" />
+                  <span>Modificar tema y preguntas</span>
                 </button>
-              )}
+
+                {mod.isCustom && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onOpenCustomTopic(); }}
+                    className="font-semibold flex items-center gap-1 transition-all hover:opacity-80"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Editar apuntes
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}

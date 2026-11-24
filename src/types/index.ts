@@ -99,4 +99,13 @@ export interface AppSettings {
   openAITtsVoice?: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   enableHumanInterjections?: boolean;
   theme?: AppTheme;
+  // Per-provider API keys
+  geminiApiKey?: string;
+  groqApiKey?: string;
+  openRouterApiKey?: string;
+  // Cloud Database & AWS Amplify configuration
+  cloudDbUrl?: string;
+  cloudDbApiKey?: string;
+  autoSyncCloud?: boolean;
+  lastCloudSyncTimestamp?: number;
 }

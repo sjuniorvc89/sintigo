@@ -234,13 +234,129 @@ export const CURATED_QUESTIONS: Record<string, QuestionItem[]> = {
 
 export const geminiService = {
   /**
+   * Discovers available Gemini models for an API key via ModelService.ListModels
+   */
+  async getAvailableGeminiModels(apiKey: string): Promise<string[]> {
+    try {
+      const endpoints = [
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`,
+        `https://generativelanguage.googleapis.com/v1/models?key=${apiKey.trim()}`
+      ];
+
+      for (const endpoint of endpoints) {
+        const res = await fetch(endpoint).catch(() => null);
+        if (res && res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data?.models && Array.isArray(data.models)) {
+            const usable = data.models
+              .filter((m: any) =>
+                Array.isArray(m.supportedGenerationMethods) &&
+                m.supportedGenerationMethods.includes('generateContent')
+              )
+              .map((m: any) => (m.name || '').replace(/^models\//, ''))
+              .filter(Boolean);
+            if (usable.length > 0) return usable;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not list Gemini models:', e);
+    }
+    return [];
+  },
+
+  /**
+   * Smart Gemini caller with candidate rotation and ModelService auto-discovery
+   */
+  async callGeminiApiWithFallback(
+    apiKey: string,
+    preferredModel: string,
+    requestBody: any
+  ): Promise<{ data: any; usedModel: string }> {
+    const cleanPreferred = (preferredModel || '').replace(/^models\//, '').trim();
+
+    // Priority candidates
+    const fallbackList = [
+      cleanPreferred,
+      'gemini-2.0-flash',
+      'gemini-2.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash',
+      'gemini-2.0-flash-lite',
+      'gemini-1.5-pro'
+    ].filter(Boolean);
+
+    const candidates = Array.from(new Set(fallbackList));
+    let lastError: any = null;
+
+    // 1. Try candidates across v1beta and v1
+    for (const modelName of candidates) {
+      for (const apiVer of ['v1beta', 'v1']) {
+        const endpoint = `https://generativelanguage.googleapis.com/${apiVer}/models/${encodeURIComponent(modelName)}:generateContent?key=${apiKey.trim()}`;
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            return { data, usedModel: modelName };
+          }
+
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = errData?.error?.message || `HTTP ${res.status}`;
+          lastError = new Error(errMsg);
+
+          if (res.status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid'))) {
+            throw new Error('API Key de Gemini no válida. Verifica tu clave en Google AI Studio.');
+          }
+          if (res.status === 403) {
+            throw new Error('API Key de Gemini sin permisos suficientes.');
+          }
+        } catch (e: any) {
+          if (e.message && e.message.includes('API Key')) throw e;
+          lastError = e;
+        }
+      }
+    }
+
+    // 2. If candidates failed with 404/not supported, query ListModels for authorized models
+    const discovered = await this.getAvailableGeminiModels(apiKey);
+    if (discovered.length > 0) {
+      for (const modelName of discovered) {
+        for (const apiVer of ['v1beta', 'v1']) {
+          const endpoint = `https://generativelanguage.googleapis.com/${apiVer}/models/${encodeURIComponent(modelName)}:generateContent?key=${apiKey.trim()}`;
+          try {
+            const res = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(requestBody),
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              return { data, usedModel: modelName };
+            }
+          } catch {
+            // continue
+          }
+        }
+      }
+    }
+
+    throw lastError || new Error(`No se pudo conectar con los modelos de Gemini. Verifica tu clave.`);
+  },
+
+  /**
    * Tests connection to the selected AI provider (Gemini, Groq, OpenRouter)
    */
   async testConnection(settings: {
     provider: AIProvider;
     apiKey: string;
     model: string;
-  }): Promise<{ success: boolean; message: string }> {
+  }): Promise<{ success: boolean; message: string; suggestedModel?: string }> {
     const { provider, apiKey, model } = settings;
 
     if (!apiKey || apiKey.trim() === '') {
@@ -249,21 +365,17 @@ export const geminiService = {
 
     try {
       if (provider === 'gemini') {
-        const testModel = model || 'gemini-1.5-flash';
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(testModel)}:generateContent?key=${apiKey.trim()}`;
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'Responde únicamente con la palabra: CONECTADO' }] }],
-          }),
-        });
+        const cleanModel = (model || 'gemini-2.0-flash').replace(/^models\//, '').trim();
+        const testBody = {
+          contents: [{ role: 'user', parts: [{ text: 'Responde únicamente con la palabra: CONECTADO' }] }],
+        };
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData?.error?.message || `Error HTTP ${res.status}`);
-        }
-        return { success: true, message: `¡Conexión exitosa con Google Gemini (${testModel})!` };
+        const { usedModel } = await this.callGeminiApiWithFallback(apiKey, cleanModel, testBody);
+        return {
+          success: true,
+          message: `¡Conexión exitosa con Google Gemini (${usedModel})!`,
+          suggestedModel: usedModel,
+        };
       } else if (provider === 'groq') {
         const testModel = model || 'llama-3.3-70b-versatile';
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -388,43 +500,23 @@ Devuelve EXCLUSIVAMENTE un objeto JSON válido con los campos:
     systemPrompt: string,
     userMessage: string
   ): Promise<EvaluationResult> {
-    const selectedModel = model && model.includes('gemini') ? model : 'gemini-1.5-flash';
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selectedModel)}:generateContent?key=${apiKey.trim()}`;
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `${systemPrompt}\n\n${userMessage}` }]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.5,
-          maxOutputTokens: 250,
-          responseMimeType: 'application/json',
-          responseSchema: EVALUATION_SCHEMA
+    const cleanModel = (model || 'gemini-2.0-flash').replace(/^models\//, '').trim();
+    const requestBody = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `${systemPrompt}\n\n${userMessage}` }]
         }
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const status = response.status;
-      if (status === 400 || status === 404) {
-        throw new Error(`Modelo "${selectedModel}" o clave no disponible (${status}). Prueba seleccionando gemini-1.5-flash.`);
-      } else if (status === 403) {
-        throw new Error('API Key de Gemini sin permisos o restringida.');
-      } else if (status === 429) {
-        throw new Error('Límite de cuota gratuita alcanzado en Gemini. Espera un minuto o cambia a Groq.');
-      } else {
-        throw new Error(errorData?.error?.message || `Error en la API de Gemini (${status})`);
+      ],
+      generationConfig: {
+        temperature: 0.5,
+        maxOutputTokens: 250,
+        responseMimeType: 'application/json',
+        responseSchema: EVALUATION_SCHEMA
       }
-    }
+    };
 
-    const data = await response.json();
+    const { data } = await this.callGeminiApiWithFallback(apiKey, cleanModel, requestBody);
     const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!rawText) throw new Error('Respuesta vacía de Gemini.');
 
@@ -544,17 +636,13 @@ Devuelve EXCLUSIVAMENTE un JSON:
 
     try {
       if (provider === 'gemini') {
-        const selectedModel = model && model.includes('gemini') ? model : 'gemini-1.5-flash';
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selectedModel)}:generateContent?key=${apiKey.trim()}`;
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: promptText }] }],
-            generationConfig: { temperature: 0.8, responseMimeType: 'application/json' }
-          })
-        });
-        const data = await res.json();
+        const cleanModel = (model || 'gemini-2.0-flash').replace(/^models\//, '').trim();
+        const requestBody = {
+          contents: [{ role: 'user', parts: [{ text: promptText }] }],
+          generationConfig: { temperature: 0.8, responseMimeType: 'application/json' }
+        };
+
+        const { data } = await this.callGeminiApiWithFallback(apiKey, cleanModel, requestBody);
         const parsed = JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text);
         return {
           id: 'dyn_' + Date.now(),
@@ -609,6 +697,20 @@ Devuelve EXCLUSIVAMENTE un JSON:
       CURATED_QUESTIONS[moduleId] = [];
     }
     CURATED_QUESTIONS[moduleId].push(...questions);
+  },
+
+  /**
+   * Set (replace) questions for a module
+   */
+  setQuestionsForModule(moduleId: string, questions: QuestionItem[]): void {
+    CURATED_QUESTIONS[moduleId] = [...questions];
+  },
+
+  /**
+   * Get all registered questions for a module
+   */
+  getQuestionsForModule(moduleId: string): QuestionItem[] {
+    return CURATED_QUESTIONS[moduleId] ? [...CURATED_QUESTIONS[moduleId]] : [];
   },
 
   /**

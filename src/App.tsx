@@ -18,6 +18,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { CustomTopicModal } from './components/CustomTopicModal';
 import { ImportModal } from './components/ImportModal';
 import { AddTopicModal } from './components/AddTopicModal';
+import { EditTopicModal } from './components/EditTopicModal';
 import { AlertTriangle, Key, Sparkles } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -42,6 +43,8 @@ export const App: React.FC = () => {
   const [isCustomTopicOpen, setIsCustomTopicOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isAddTopicOpen, setIsAddTopicOpen] = useState(false);
+  const [isEditTopicOpen, setIsEditTopicOpen] = useState(false);
+  const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
 
   // Remediation forced question from Error Log
   const [forcedQuestion, setForcedQuestion] = useState<QuestionItem | null>(null);
@@ -221,6 +224,24 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleOpenEditTopic = (mod: CourseModule) => {
+    setEditingModuleId(mod.id);
+    setIsEditTopicOpen(true);
+  };
+
+  const handleTopicUpdated = (updatedModule: CourseModule, updatedQuestions: QuestionItem[]) => {
+    const updatedModules = modules.map((m) =>
+      m.id === updatedModule.id ? updatedModule : m
+    );
+    setModules(updatedModules);
+    storageService.saveModules(updatedModules);
+
+    // If active module is the one updated, update the questions immediately
+    if (activeModuleId === updatedModule.id && updatedQuestions.length > 0) {
+      setForcedQuestion(updatedQuestions[0]);
+    }
+  };
+
   const unpracticedCount = errorLog.filter((e) => !e.practiced).length;
 
   return (
@@ -317,6 +338,7 @@ export const App: React.FC = () => {
             onSelectModule={handleSelectModule}
             onOpenCustomTopic={() => setIsCustomTopicOpen(true)}
             onOpenAddTopic={() => setIsAddTopicOpen(true)}
+            onEditModule={handleOpenEditTopic}
             onDeleteModule={handleDeleteTopic}
             scrollTargetRef={quizRef}
           />
@@ -370,6 +392,18 @@ export const App: React.FC = () => {
         isOpen={isAddTopicOpen}
         onClose={() => setIsAddTopicOpen(false)}
         onAddTopic={handleAddTopic}
+      />
+
+      {/* Edit Topic Modal */}
+      <EditTopicModal
+        isOpen={isEditTopicOpen}
+        modules={modules}
+        initialModuleId={editingModuleId}
+        onClose={() => setIsEditTopicOpen(false)}
+        onTopicUpdated={handleTopicUpdated}
+        apiKey={settings.apiKey}
+        provider={settings.provider}
+        model={settings.model}
       />
     </div>
   );

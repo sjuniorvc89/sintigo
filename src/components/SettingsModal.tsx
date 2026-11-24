@@ -1,8 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, Cpu, Smile, Volume2, ShieldCheck, ExternalLink, Check, AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import {
+  X,
+  Key,
+  Cpu,
+  Smile,
+  Volume2,
+  ShieldCheck,
+  ExternalLink,
+  Check,
+  AlertCircle,
+  Loader2,
+  Sparkles,
+  Database,
+  Cloud,
+  Download,
+  Upload,
+  Eye,
+  EyeOff,
+  RefreshCw,
+} from 'lucide-react';
 import { AIProvider, AppSettings, PersonalityMode } from '../types';
 import { speechService } from '../services/speechService';
 import { geminiService } from '../services/geminiService';
+import { storageService } from '../services/storageService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -19,6 +39,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [formData, setFormData] = useState<AppSettings>(settings);
   const [isSavedNotice, setIsSavedNotice] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showCloudKey, setShowCloudKey] = useState(false);
+
+  // Cloud sync state
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [cloudSyncResult, setCloudSyncResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Available browser voices
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -40,25 +66,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleProviderChange = (newProvider: AIProvider) => {
-    let defaultModel = 'gemini-1.5-flash';
-    if (newProvider === 'groq') defaultModel = 'llama-3.3-70b-versatile';
-    if (newProvider === 'openrouter') defaultModel = 'google/gemini-2.0-flash-lite-001';
+    const currentProvider = formData.provider;
+    const updated = { ...formData };
+    if (currentProvider === 'gemini') updated.geminiApiKey = formData.apiKey;
+    if (currentProvider === 'groq') updated.groqApiKey = formData.apiKey;
+    if (currentProvider === 'openrouter') updated.openRouterApiKey = formData.apiKey;
+
+    let nextKey = '';
+    let defaultModel = 'gemini-2.0-flash';
+    if (newProvider === 'gemini') {
+      nextKey = updated.geminiApiKey || (currentProvider === 'gemini' ? formData.apiKey : '');
+      defaultModel = updated.model && updated.model.startsWith('gemini') ? updated.model : 'gemini-2.0-flash';
+    } else if (newProvider === 'groq') {
+      nextKey = updated.groqApiKey || '';
+      defaultModel = 'llama-3.3-70b-versatile';
+    } else if (newProvider === 'openrouter') {
+      nextKey = updated.openRouterApiKey || '';
+      defaultModel = 'google/gemini-2.0-flash-lite-001';
+    }
 
     setFormData({
-      ...formData,
+      ...updated,
       provider: newProvider,
+      apiKey: nextKey,
       model: defaultModel,
     });
     setTestResult(null);
   };
 
   const handleSave = () => {
-    onSave(formData);
+    const updated = { ...formData };
+    if (formData.provider === 'gemini') updated.geminiApiKey = formData.apiKey;
+    if (formData.provider === 'groq') updated.groqApiKey = formData.apiKey;
+    if (formData.provider === 'openrouter') updated.openRouterApiKey = formData.apiKey;
+
+    onSave(updated);
     setIsSavedNotice(true);
     setTimeout(() => {
       setIsSavedNotice(false);
       onClose();
     }, 600);
+  };
+
+  const handleSyncCloud = async () => {
+    if (!formData.cloudDbUrl || !formData.cloudDbUrl.trim()) {
+      setCloudSyncResult({
+        success: false,
+        message: 'Ingresa la URL del endpoint de tu base de datos en AWS / Nube.',
+      });
+      return;
+    }
+
+    setIsSyncingCloud(true);
+    setCloudSyncResult(null);
+
+    const res = await storageService.syncWithCloud(
+      formData.cloudDbUrl,
+      formData.cloudDbApiKey
+    );
+
+    setIsSyncingCloud(false);
+    setCloudSyncResult(res);
+  };
+
+  const handleExportDatabase = () => {
+    storageService.exportDatabaseBackup();
+  };
+
+  const handleImportDatabase = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+
+      const result = storageService.importDatabaseBackup(text);
+      if (result.success) {
+        alert(result.message);
+        window.location.reload();
+      } else {
+        alert(result.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleTestConnection = async () => {
@@ -70,6 +163,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       apiKey: formData.apiKey,
       model: formData.model,
     });
+
+    if (result.success && result.suggestedModel && result.suggestedModel !== formData.model) {
+      setFormData((prev) => ({ ...prev, model: result.suggestedModel! }));
+    }
 
     setIsTesting(false);
     setTestResult(result);
@@ -221,16 +318,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </a>
               </div>
 
-              <input
-                type="password"
-                value={formData.apiKey}
-                onChange={(e) => {
-                  setFormData({ ...formData, apiKey: e.target.value });
-                  setTestResult(null);
-                }}
-                placeholder={`Pega aquí tu clave de ${providerLinks[formData.provider].name}...`}
-                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-100 font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={formData.apiKey}
+                  onChange={(e) => {
+                    setFormData({ ...formData, apiKey: e.target.value });
+                    setTestResult(null);
+                  }}
+                  placeholder={`Pega aquí tu clave de ${providerLinks[formData.provider].name}...`}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-slate-100 font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition"
+                  title={showApiKey ? 'Ocultar clave' : 'Mostrar clave'}
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
 
               <div className="flex items-center justify-between pt-1">
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
@@ -282,8 +389,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, model: e.target.value })}
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-indigo-500"
               >
-                <option value="gemini-1.5-flash">gemini-1.5-flash (Predeterminado - Gratuito, ultra veloz)</option>
-                <option value="gemini-2.0-flash">gemini-2.0-flash (Próxima generación - Razonamiento ágil)</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash (Recomendado - Gratuito, ultra veloz)</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash (Nueva generación - Razonamiento ágil)</option>
+                <option value="gemini-1.5-flash-latest">gemini-1.5-flash-latest (1.5 Flash estable)</option>
+                <option value="gemini-1.5-flash">gemini-1.5-flash (Versión clásica)</option>
                 <option value="gemini-1.5-pro">gemini-1.5-pro (Máxima profundidad pedagógica)</option>
               </select>
             )}
@@ -728,6 +837,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Database & AWS Amplify Cloud Section */}
+          {(() => {
+            const dbSummary = storageService.getDatabaseSummary();
+            return (
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400">
+                      <Database className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
+                        <span>Base de Datos & Nube (AWS Amplify)</span>
+                      </h4>
+                      <p className="text-[10px] text-slate-400">
+                        Persistencia de temas, preguntas modificadas, claves de API y estadísticas
+                      </p>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                      formData.cloudDbUrl && formData.cloudDbUrl.trim()
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                    }`}
+                  >
+                    {formData.cloudDbUrl && formData.cloudDbUrl.trim() ? (
+                      <>
+                        <Cloud className="w-3 h-3" />
+                        <span>Nube AWS</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-3 h-3" />
+                        <span>Local ($0 Costo)</span>
+                      </>
+                    )}
+                  </span>
+                </div>
+
+                {/* Database Metrics Grid */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-center">
+                    <span className="block text-[10px] text-slate-400 font-semibold">Temas</span>
+                    <span className="text-sm font-black text-slate-100 font-mono">
+                      {dbSummary.totalModules}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-center">
+                    <span className="block text-[10px] text-slate-400 font-semibold">Preguntas</span>
+                    <span className="text-sm font-black text-slate-100 font-mono">
+                      {dbSummary.totalQuestions}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-center">
+                    <span className="block text-[10px] text-slate-400 font-semibold">Errores</span>
+                    <span className="text-sm font-black text-slate-100 font-mono">
+                      {dbSummary.totalErrors}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Cloud DB Endpoint URL */}
+                <div className="space-y-1.5 pt-1">
+                  <label className="text-[11px] font-semibold text-slate-300 flex items-center justify-between">
+                    <span>URL Endpoint de Base de Datos en AWS Amplify:</span>
+                    <span className="text-[10px] text-slate-500 font-normal">API Gateway / AppSync / REST</span>
+                  </label>
+                  <input
+                    type="url"
+                    value={formData.cloudDbUrl || ''}
+                    onChange={(e) => {
+                      setFormData({ ...formData, cloudDbUrl: e.target.value });
+                      setCloudSyncResult(null);
+                    }}
+                    placeholder="https://xxxxxx.appsync-api.us-east-1.amazonaws.com/graphql o REST URL..."
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {/* Cloud DB API Key / Auth Token */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Clave / Token de Autorización de la Base de Datos:
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showCloudKey ? 'text' : 'password'}
+                      value={formData.cloudDbApiKey || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, cloudDbApiKey: e.target.value });
+                        setCloudSyncResult(null);
+                      }}
+                      placeholder="AWS API Key / Bearer Token (opcional)..."
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3 pr-10 py-2 text-xs text-slate-100 font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCloudKey(!showCloudKey)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                    >
+                      {showCloudKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Sync Action & Feedback */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleSyncCloud}
+                    disabled={isSyncingCloud}
+                    className="px-3.5 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isSyncingCloud ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    <span>Sincronizar con AWS Nube</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExportDatabase}
+                      className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold transition flex items-center justify-center gap-1 flex-1 sm:flex-initial"
+                      title="Descargar copia de seguridad completa en formato JSON"
+                    >
+                      <Download className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Exportar JSON</span>
+                    </button>
+
+                    <label
+                      className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold transition flex items-center justify-center gap-1 cursor-pointer flex-1 sm:flex-initial"
+                      title="Restaurar base de datos desde un archivo JSON"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Restaurar JSON</span>
+                      <input
+                        type="file"
+                        accept=".json"
+                        onChange={handleImportDatabase}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Cloud Sync Status Banner */}
+                {cloudSyncResult && (
+                  <div
+                    className={`p-2.5 rounded-xl border flex items-center gap-2 text-xs ${
+                      cloudSyncResult.success
+                        ? 'bg-emerald-950/60 border-emerald-700/50 text-emerald-200'
+                        : 'bg-rose-950/60 border-rose-700/50 text-rose-200'
+                    }`}
+                  >
+                    {cloudSyncResult.success ? (
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span>{cloudSyncResult.message}</span>
+                  </div>
+                )}
+
+                {/* AWS Amplify Backend notice */}
+                <p className="text-[10px] text-slate-500 leading-relaxed bg-slate-950/50 p-2.5 rounded-xl border border-slate-800/80">
+                  ⚡ <strong>AWS Amplify Backend Gen 2:</strong> Los esquemas de DynamoDB para <em>CourseModule</em>, <em>QuestionItem</em>, <em>UserProfile</em> y <em>ErrorLog</em> ya están listos en la carpeta <code>amplify/</code> para desplegar con <code>npx ampx sandbox</code> o mediante la consola de AWS.
+                </p>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Footer */}

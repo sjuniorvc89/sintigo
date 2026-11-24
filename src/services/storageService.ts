@@ -1,4 +1,5 @@
 import { AppSettings, CourseModule, ErrorLogItem, QuestionItem, UserStats } from '../types';
+import { CURATED_QUESTIONS, geminiService } from './geminiService';
 
 const STORAGE_KEYS = {
   SETTINGS: 'migolab_settings_v1',
@@ -6,12 +7,13 @@ const STORAGE_KEYS = {
   MODULES: 'migolab_modules_v1',
   ERROR_LOG: 'migolab_error_log_v1',
   CUSTOM_QUESTIONS: 'migolab_custom_questions_v1',
+  CLOUD_CONFIG: 'migolab_cloud_config_v1',
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'gemini',
   apiKey: '',
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.0-flash',
   personality: 'sarcastico_brutal',
   autoSpeakQuestions: true,
   soundEffects: true,
@@ -231,5 +233,253 @@ export const storageService = {
     const existing = map[moduleId] || [];
     map[moduleId] = [...existing, ...questions];
     this.saveCustomQuestions(map);
-  }
+  },
+
+  /**
+   * Retrieves all questions for a module (either custom saved or built-in curated)
+   */
+  getQuestionsForModule(moduleId: string): QuestionItem[] {
+    const customMap = this.getCustomQuestions();
+    if (customMap[moduleId] && customMap[moduleId].length > 0) {
+      return customMap[moduleId];
+    }
+    const builtIn = CURATED_QUESTIONS[moduleId];
+    if (builtIn && builtIn.length > 0) {
+      return [...builtIn];
+    }
+    return [];
+  },
+
+  /**
+   * Overwrites/updates all questions for a specific module
+   */
+  saveQuestionsForModule(moduleId: string, questions: QuestionItem[]): void {
+    const map = this.getCustomQuestions();
+    map[moduleId] = [...questions];
+    this.saveCustomQuestions(map);
+    geminiService.setQuestionsForModule(moduleId, questions);
+  },
+
+  /**
+   * Updates an existing course module or appends it
+   */
+  updateModule(updatedModule: CourseModule): void {
+    const list = this.getModules();
+    const exists = list.some((m) => m.id === updatedModule.id);
+    const nextList = exists
+      ? list.map((m) => (m.id === updatedModule.id ? updatedModule : m))
+      : [...list, updatedModule];
+    this.saveModules(nextList);
+  },
+
+  /**
+   * Generates a complete JSON database dump for backup or AWS Amplify migration
+   */
+  exportDatabaseBackup(): { filename: string; json: string } {
+    const backupData = {
+      app: 'MigoLab',
+      version: 2,
+      exportTimestamp: Date.now(),
+      exportDate: new Date().toISOString(),
+      modules: this.getModules(),
+      customQuestions: this.getCustomQuestions(),
+      stats: this.getStats(),
+      settings: this.getSettings(),
+      errorLog: this.getErrorLog(),
+    };
+
+    const json = JSON.stringify(backupData, null, 2);
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `migolab_database_backup_${dateStr}.json`;
+
+    // Trigger browser download
+    try {
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn('Could not auto-download JSON file:', e);
+    }
+
+    return { filename, json };
+  },
+
+  /**
+   * Imports and restores the database from a JSON backup file
+   */
+  importDatabaseBackup(jsonString: string): {
+    success: boolean;
+    message: string;
+    counts?: { modules: number; questions: number; errors: number };
+  } {
+    try {
+      const data = JSON.parse(jsonString);
+      if (!data || typeof data !== 'object') {
+        return { success: false, message: 'El archivo JSON no tiene un formato válido.' };
+      }
+
+      let restoredModules = 0;
+      let restoredQuestions = 0;
+      let restoredErrors = 0;
+
+      if (Array.isArray(data.modules)) {
+        this.saveModules(data.modules);
+        restoredModules = data.modules.length;
+      }
+
+      if (data.customQuestions && typeof data.customQuestions === 'object') {
+        this.saveCustomQuestions(data.customQuestions);
+        Object.entries(data.customQuestions).forEach(([modId, qs]) => {
+          if (Array.isArray(qs)) {
+            geminiService.setQuestionsForModule(modId, qs as QuestionItem[]);
+            restoredQuestions += qs.length;
+          }
+        });
+      }
+
+      if (Array.isArray(data.errorLog)) {
+        this.saveErrorLog(data.errorLog);
+        restoredErrors = data.errorLog.length;
+      }
+
+      if (data.stats && typeof data.stats === 'object') {
+        this.saveStats({ ...INITIAL_STATS, ...data.stats });
+      }
+
+      if (data.settings && typeof data.settings === 'object') {
+        this.saveSettings({ ...DEFAULT_SETTINGS, ...data.settings });
+      }
+
+      return {
+        success: true,
+        message: `Base de datos restaurada: ${restoredModules} temas, ${restoredQuestions} preguntas personalizadas y ${restoredErrors} errores.`,
+        counts: {
+          modules: restoredModules,
+          questions: restoredQuestions,
+          errors: restoredErrors,
+        },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `Error al leer la base de datos: ${err.message || 'Formato JSON corrupto'}`,
+      };
+    }
+  },
+
+  /**
+   * Syncs database state with a Cloud endpoint (AWS Amplify API Gateway, Lambda, DynamoDB REST, or remote cloud DB)
+   */
+  async syncWithCloud(
+    endpointUrl: string,
+    apiKey?: string
+  ): Promise<{ success: boolean; message: string; updatedRemote?: boolean }> {
+    if (!endpointUrl || !endpointUrl.trim()) {
+      return {
+        success: false,
+        message: 'No se configuró una URL de endpoint para la base de datos en la nube.',
+      };
+    }
+
+    const payload = {
+      app: 'MigoLab',
+      clientTimestamp: Date.now(),
+      action: 'sync',
+      data: {
+        modules: this.getModules(),
+        customQuestions: this.getCustomQuestions(),
+        stats: this.getStats(),
+        errorLog: this.getErrorLog(),
+      },
+    };
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey && apiKey.trim()) {
+        headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+        headers['x-api-key'] = apiKey.trim();
+      }
+
+      const res = await fetch(endpointUrl.trim(), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Error en el servidor de base de datos (${res.status} ${res.statusText})`);
+      }
+
+      const resData = await res.json().catch(() => ({}));
+
+      // Update sync timestamp in settings
+      const settings = this.getSettings();
+      settings.lastCloudSyncTimestamp = Date.now();
+      this.saveSettings(settings);
+
+      // If server returned synced or updated modules/questions, optionally merge
+      if (resData.remoteData?.modules && Array.isArray(resData.remoteData.modules)) {
+        this.saveModules(resData.remoteData.modules);
+      }
+      if (resData.remoteData?.customQuestions) {
+        this.saveCustomQuestions(resData.remoteData.customQuestions);
+      }
+
+      return {
+        success: true,
+        message: '¡Base de datos sincronizada con éxito en AWS / Nube!',
+        updatedRemote: true,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `Fallo de sincronización: ${err.message || 'No se pudo contactar el endpoint'}`,
+      };
+    }
+  },
+
+  /**
+   * Summary of local & cloud database status
+   */
+  getDatabaseSummary() {
+    const modules = this.getModules();
+    const customQuestions = this.getCustomQuestions();
+    let totalQuestions = 0;
+
+    // Count questions across all modules
+    modules.forEach((m) => {
+      if (customMapHasQuestions(customQuestions, m.id)) {
+        totalQuestions += customQuestions[m.id].length;
+      } else if (CURATED_QUESTIONS[m.id]) {
+        totalQuestions += CURATED_QUESTIONS[m.id].length;
+      }
+    });
+
+    const errorLog = this.getErrorLog();
+    const stats = this.getStats();
+    const settings = this.getSettings();
+
+    return {
+      totalModules: modules.length,
+      totalQuestions,
+      totalErrors: errorLog.length,
+      streak: stats.streak,
+      xp: stats.xp,
+      hasCloudEndpoint: Boolean(settings.cloudDbUrl && settings.cloudDbUrl.trim()),
+      cloudDbUrl: settings.cloudDbUrl || '',
+      lastSyncTimestamp: settings.lastCloudSyncTimestamp || null,
+    };
+  },
 };
+
+function customMapHasQuestions(map: Record<string, QuestionItem[]>, id: string): boolean {
+  return Array.isArray(map[id]) && map[id].length > 0;
+}
