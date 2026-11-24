@@ -1,5 +1,6 @@
 import { AppSettings, CourseModule, ErrorLogItem, QuestionItem, UserStats } from '../types';
 import { CURATED_QUESTIONS, geminiService } from './geminiService';
+import { amplifyDataService } from './amplifyDataService';
 
 const STORAGE_KEYS = {
   SETTINGS: 'migolab_settings_v1',
@@ -374,16 +375,33 @@ export const storageService = {
   },
 
   /**
-   * Syncs database state with a Cloud endpoint (AWS Amplify API Gateway, Lambda, DynamoDB REST, or remote cloud DB)
+   * Syncs database state with AWS Amplify Gen 2 DynamoDB or a custom Cloud endpoint
    */
   async syncWithCloud(
-    endpointUrl: string,
+    endpointUrl?: string,
     apiKey?: string
   ): Promise<{ success: boolean; message: string; updatedRemote?: boolean }> {
+    // 1. If Amplify Gen 2 is configured with outputs, sync directly to DynamoDB
+    if (amplifyDataService.isConfigured()) {
+      const res = await amplifyDataService.syncAllToDynamo(
+        this.getModules(),
+        this.getCustomQuestions(),
+        this.getStats(),
+        this.getErrorLog()
+      );
+      if (res.success) {
+        const settings = this.getSettings();
+        settings.lastCloudSyncTimestamp = Date.now();
+        this.saveSettings(settings);
+      }
+      return res;
+    }
+
+    // 2. Otherwise use the HTTP endpoint if provided
     if (!endpointUrl || !endpointUrl.trim()) {
       return {
         success: false,
-        message: 'No se configuró una URL de endpoint para la base de datos en la nube.',
+        message: 'No se detectó amplify_outputs.json ni se configuró una URL de endpoint en la nube.',
       };
     }
 
@@ -466,6 +484,7 @@ export const storageService = {
     const errorLog = this.getErrorLog();
     const stats = this.getStats();
     const settings = this.getSettings();
+    const isAmplifyConnected = amplifyDataService.isConfigured();
 
     return {
       totalModules: modules.length,
@@ -473,7 +492,8 @@ export const storageService = {
       totalErrors: errorLog.length,
       streak: stats.streak,
       xp: stats.xp,
-      hasCloudEndpoint: Boolean(settings.cloudDbUrl && settings.cloudDbUrl.trim()),
+      isAmplifyConnected,
+      hasCloudEndpoint: Boolean(isAmplifyConnected || (settings.cloudDbUrl && settings.cloudDbUrl.trim())),
       cloudDbUrl: settings.cloudDbUrl || '',
       lastSyncTimestamp: settings.lastCloudSyncTimestamp || null,
     };
